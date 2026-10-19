@@ -1,0 +1,126 @@
+---
+- name: Разворачивание ноды Remnawave / Xray
+  hosts: webservers
+  become: yes
+
+  # Переменные
+  vars:
+    domain_name: "{{ lookup('env', 'DOMAIN_NAME') }}"
+    admin_email: "{{ lookup('env', 'ADMIN_EMAIL') }}"
+    node_secret_key: "{{ lookup('env', 'NODE_SECRET_KEY') }}"
+
+    # docker-compose.yml из панели Remnawave
+    docker_compose_content: |
+      services:
+        remnanode:
+          container_name: remnanode
+          hostname: remnanode
+          image: remnawave/node:latest
+          network_mode: host
+          restart: always
+          cap_add:
+            - NET_ADMIN
+          ulimits:
+            nofile:
+              soft: 1048576
+              hard: 1048576
+          environment:
+            - NODE_PORT=2222
+            - SECRET_KEY="{{ node_secret_key }}"
+          volumes:
+            - /etc/letsencrypt:/etc/letsencrypt:ro
+
+  tasks:
+
+    - name: Проверить, что переменные окружения загружены
+      assert:
+        that:
+          - domain_name | length > 0
+          - admin_email | length > 0
+          - node_secret_key | length > 0
+        fail_msg: "Не заданы DOMAIN_NAME, ADMIN_EMAIL или NODE_SECRET_KEY. Запускайте через ./run.sh — переменные берутся из .env."
+
+    # Установка ПО
+    - name: Установить btop, neovim, certbot, ufw и системные утилиты
+      apt:
+        name:
+          - btop
+          - neovim
+          - certbot
+          - ufw
+          - curl
+          - ca-certificates
+        state: present
+        update_cache: yes
+
+    # Фаервол
+    - name: Разрешить необходимые порты в UFW
+      ufw:
+        rule: allow
+        port: "{{ item.port }}"
+        proto: "{{ item.proto }}"
+      loop:
+        - { port: '22', proto: 'tcp' }
+        - { port: '80', proto: 'tcp' }
+        - { port: '80', proto: 'udp' }
+        - { port: '443', proto: 'tcp' }
+        - { port: '443', proto: 'udp' }
+        - { port: '2222', proto: 'tcp' }
+        - { port: '2222', proto: 'udp' }
+
+    - name: Включить UFW
+      ufw:
+        state: enabled
+
+    # Docker
+    - name: Скачать скрипт установки Docker
+      get_url:
+        url: https://get.docker.com
+        dest: /tmp/get-docker.sh
+        mode: '0755'
+
+    - name: Запустить скрипт установки Docker
+      command: sh /tmp/get-docker.sh
+      args:
+        creates: /usr/bin/docker
+
+    # SSL-сертификат
+    - name: Проверить, существует ли уже сертификат
+      stat:
+        path: "/etc/letsencrypt/live/{{ domain_name }}/fullchain.pem"
+      register: cert_file
+
+    - name: Получить SSL сертификат (Certbot Standalone)
+      command: >
+        certbot certonly --standalone
+        -d {{ domain_name }}
+        --non-interactive
+        --agree-tos
+        -m {{ admin_email }}
+      when: not cert_file.stat.exists
+
+    # Cron
+    - name: Добавить автообновление сертификата и перезапуск ноды в Crontab
+      cron:
+        name: "Renew certbot and restart remnanode"
+        minute: "0"
+        hour: "3"
+        weekday: "1"
+        job: "certbot renew --quiet && docker restart remnanode"
+
+    # Запуск ноды
+    - name: Создать папку /opt/remnanode
+      file:
+        path: /opt/remnanode
+        state: directory
+        mode: '0755'
+
+    - name: Создать файл docker-compose.yml
+      copy:
+        content: "{{ docker_compose_content }}"
+        dest: /opt/remnanode/docker-compose.yml
+
+    - name: Запустить Docker Compose
+      command: docker compose up -d
+      args:
+        chdir: /opt/remnanode
