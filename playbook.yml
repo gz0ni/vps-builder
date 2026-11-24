@@ -85,6 +85,17 @@
         creates: /usr/bin/docker
 
     # SSL-сертификат
+    - name: Найти установленные сертификаты Let's Encrypt
+      find:
+        paths: /etc/letsencrypt/live
+        file_type: directory
+      register: le_live_dirs
+
+    # Смена домена: удаляем сертификаты всех доменов, кроме DOMAIN_NAME
+    - name: Удалить SSL-сертификаты старого домена
+      command: certbot delete --cert-name {{ item }} --non-interactive
+      loop: "{{ le_live_dirs.files | map(attribute='path') | map('basename') | reject('equalto', domain_name) | list }}"
+
     - name: Проверить, существует ли уже сертификат
       stat:
         path: "/etc/letsencrypt/live/{{ domain_name }}/fullchain.pem"
@@ -98,6 +109,7 @@
         --agree-tos
         -m {{ admin_email }}
       when: not cert_file.stat.exists
+      register: cert_issued
 
     # Cron
     - name: Добавить автообновление сертификата и перезапуск ноды в Crontab
@@ -124,3 +136,8 @@
       command: docker compose up -d
       args:
         chdir: /opt/remnanode
+
+    # Нода должна подхватить новый сертификат
+    - name: Перезапустить ноду после смены сертификата
+      command: docker restart remnanode
+      when: cert_issued is changed

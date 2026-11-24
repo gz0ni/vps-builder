@@ -35,6 +35,15 @@ chmod +x run.sh
 
 `run.sh` loads `.env` and runs `ansible-playbook -i hosts.ini playbook.yml`. Extra arguments are passed through, for example `./run.sh --check`.
 
+## Changing the domain
+
+1. Point the new domain's DNS A record to the VPS **before** running (certbot standalone needs it).
+2. Update `DOMAIN_NAME` in `.env`.
+3. In the Remnawave panel, update the domain and certificate paths (`/etc/letsencrypt/live/<new-domain>/...`) in the node's Xray profile.
+4. Run `./run.sh`.
+
+The playbook deletes certificates for every domain other than `DOMAIN_NAME` (`certbot delete`, including renewal configs), issues a new certificate, and restarts `remnanode`. If the domain hasn't changed, these steps are skipped.
+
 ## macOS
 
 Install Ansible and `sshpass` (needed for password-based SSH on older Ansible versions):
